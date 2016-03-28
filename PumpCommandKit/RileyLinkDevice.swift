@@ -12,7 +12,7 @@ import RileyLinkKit
 
 
 enum CommandError: ErrorType {
-    case ConfigurationError
+    case ConfigurationError(String)
     case CommunicationError(String)
 }
 
@@ -31,7 +31,7 @@ extension RileyLinkDevice {
     func sendBolusDose(units: Double, completionHandler: (success: Bool, error: CommandError?) -> Void) {
 
         guard let pumpID = pumpState?.pumpId else {
-            completionHandler(success: false, error: .ConfigurationError)
+            completionHandler(success: false, error: .ConfigurationError("Pump ID not found"))
             return
         }
 
@@ -58,18 +58,47 @@ extension RileyLinkDevice {
      */
     func sendTempBasalDose(unitsPerHour: Double, duration: NSTimeInterval, completionHandler: (success: Bool, doseMessage: PumpMessage?, error: CommandError?) -> Void) {
         guard let pumpID = pumpState?.pumpId else {
-            completionHandler(success: false, doseMessage: nil, error: .ConfigurationError)
+            completionHandler(success: false, doseMessage: nil, error: .ConfigurationError("Pump ID not found"))
             return
         }
 
-        let writeCommand = SetTempBasalCommand(unitsPerHour: unitsPerHour, duration: duration, address: pumpID)
+        let writeCommand = ChangeTempBasalCommand(unitsPerHour: unitsPerHour, duration: duration, address: pumpID)
         let readCommand = ReadTempBasalCommand(address: pumpID)
 
         sendTempBasalMessage(writeCommand.firstMessage.txData, secondMessage: writeCommand.secondMessage.txData, thirdMessage: readCommand.message.txData) { (response, error) -> Void in
             if let response = response, message = PumpMessage(rxData: response), body = message.messageBody as? ReadTempBasalCarelinkMessageBody {
-                completionHandler(success: body.timeRemaining == duration, doseMessage: message, error: nil)
+                let success = body.timeRemaining == duration
+
+                completionHandler(success: success, doseMessage: message, error: success ? nil : .CommunicationError("Dose did not verify"))
             } else {
                 completionHandler(success: false, doseMessage: nil, error: .CommunicationError(error ?? ""))
+            }
+        }
+    }
+
+    func changeTime(completionHandler: (success: Bool, error: CommandError?) -> Void) {
+        guard let pumpID = pumpState?.pumpId else {
+            completionHandler(success: false, error: .ConfigurationError("Pump ID not found"))
+            return
+        }
+
+        let firstMessage = PumpMessage(packetType: .Carelink, address: pumpID, messageType: .ChangeTime, messageBody: CarelinkShortMessageBody())
+
+        let calendar = NSCalendar(calendarIdentifier: NSCalendarIdentifierGregorian)!
+
+        sendChangeTimeMessage(firstMessage.txData,
+            secondMessageGenerator: { () -> NSData in
+                let components = calendar.components([.Year, .Month, .Day, .Hour, .Minute, .Second], fromDate: NSDate())
+
+                return PumpMessage(packetType: .Carelink, address: pumpID, messageType: .ChangeTime, messageBody: ChangeTimeCarelinkMessageBody(dateComponents: components)!).txData
+            }
+        ) { (response, error) -> Void in
+            if response != nil {
+                completionHandler(success: true, error: nil)
+
+                NSNotificationCenter.defaultCenter().postNotificationName(RileyLinkDeviceDidChangeTimeNotification, object: self, userInfo: [RileyLinkDeviceTimeKey: NSDate()])
+            } else {
+                completionHandler(success: false, error: .CommunicationError(error ?? ""))
             }
         }
     }

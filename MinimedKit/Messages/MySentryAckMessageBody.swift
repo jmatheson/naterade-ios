@@ -27,18 +27,20 @@ public struct MySentryAckMessageBody: MessageBody {
     }
 
     public init?(rxData: NSData) {
-        if rxData.length == self.dynamicType.length {
-            mySentryID = rxData[1...3]
-            responseMessageTypes = rxData[5...8].flatMap({ MessageType(rawValue: $0) })
-        } else {
+        guard rxData.length == self.dynamicType.length else {
             return nil
         }
+
+        mySentryID = rxData[1...3]
+        responseMessageTypes = rxData[5...8].flatMap({ MessageType(rawValue: $0) })
     }
 
     public var txData: NSData {
         var buffer = self.dynamicType.emptyBuffer
 
-        buffer[0] = self.dynamicType.MessageCounter++
+        self.dynamicType.MessageCounter += 1
+
+        buffer[0] = self.dynamicType.MessageCounter
         buffer.replaceRange(1...3, with: mySentryID)
 
         buffer.replaceRange(5..<5 + responseMessageTypes.count, with: responseMessageTypes.map({ $0.rawValue }))

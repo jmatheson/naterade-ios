@@ -17,7 +17,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(application: UIApplication, didFinishLaunchingWithOptions launchOptions: [NSObject: AnyObject]?) -> Bool {
 
-        window?.tintColor = UIColor.tintColor()
+        window?.tintColor = UIColor.tintColor
 
         return true
     }
@@ -48,6 +48,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationShouldRequestHealthAuthorization(application: UIApplication) {
 
+    }
+
+    // MARK: - Notifications
+
+    func application(application: UIApplication, didReceiveLocalNotification notification: UILocalNotification) {
+
+    }
+
+    func application(application: UIApplication, handleActionWithIdentifier identifier: String?, forLocalNotification notification: UILocalNotification, completionHandler: () -> Void) {
+        completionHandler()
+    }
+
+    func application(application: UIApplication, handleActionWithIdentifier identifier: String?, forLocalNotification notification: UILocalNotification, withResponseInfo responseInfo: [NSObject : AnyObject], completionHandler: () -> Void) {
+        completionHandler()
+    }
+
+    // MARK: - 3D Touch
+
+    func application(application: UIApplication, performActionForShortcutItem shortcutItem: UIApplicationShortcutItem, completionHandler: (Bool) -> Void) {
+        completionHandler(false)
     }
 }
 

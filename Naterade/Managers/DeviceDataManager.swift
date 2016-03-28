@@ -27,6 +27,10 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
     static let GlucoseUpdatedNotification = "com.loudnate.Naterade.notification.GlucoseUpdated"
     static let PumpStatusUpdatedNotification = "com.loudnate.Naterade.notification.PumpStatusUpdated"
 
+    enum Error: ErrorType {
+        case ValueError(String)
+    }
+
     // MARK: - Observed state
 
     lazy var logger = DiagnosticLogger()
@@ -59,9 +63,17 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
         }
     }
 
-    var rileyLinkDeviceObserver: AnyObject? {
+    var rileyLinkDevicePacketObserver: AnyObject? {
         willSet {
-            if let observer = rileyLinkDeviceObserver {
+            if let observer = rileyLinkDevicePacketObserver {
+                NSNotificationCenter.defaultCenter().removeObserver(observer)
+            }
+        }
+    }
+
+    var rileyLinkDeviceTimeObserver: AnyObject? {
+        willSet {
+            if let observer = rileyLinkDeviceTimeObserver {
                 NSNotificationCenter.defaultCenter().removeObserver(observer)
             }
         }
@@ -76,7 +88,7 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
             device = note.object as? RileyLinkDevice,
             packet = note.userInfo?[RileyLinkDevicePacketKey] as? MinimedPacket where packet.valid == true,
             let data = packet.data,
-            message = PumpMessage(rxData: data)
+            message = PumpMessage(rxData: data) where message.address.hexadecimalString == pumpID
         {
             switch message.packetType {
             case .MySentry:
@@ -187,6 +199,24 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
     var pumpTimeZone: NSTimeZone? = NSUserDefaults.standardUserDefaults().pumpTimeZone {
         didSet {
             NSUserDefaults.standardUserDefaults().pumpTimeZone = pumpTimeZone
+
+            if let pumpTimeZone = pumpTimeZone {
+                if let basalRateSchedule = basalRateSchedule {
+                    self.basalRateSchedule = BasalRateSchedule(dailyItems: basalRateSchedule.items, timeZone: pumpTimeZone)
+                }
+
+                if let carbRatioSchedule = carbRatioSchedule {
+                    self.carbRatioSchedule = CarbRatioSchedule(unit: carbRatioSchedule.unit, dailyItems: carbRatioSchedule.items, timeZone: pumpTimeZone)
+                }
+
+                if let insulinSensitivitySchedule = insulinSensitivitySchedule {
+                    self.insulinSensitivitySchedule = InsulinSensitivitySchedule(unit: insulinSensitivitySchedule.unit, dailyItems: insulinSensitivitySchedule.items, timeZone: pumpTimeZone)
+                }
+
+                if let glucoseTargetRangeSchedule = glucoseTargetRangeSchedule {
+                    self.glucoseTargetRangeSchedule = GlucoseRangeSchedule(unit: glucoseTargetRangeSchedule.unit, dailyItems: glucoseTargetRangeSchedule.items, timeZone: pumpTimeZone)
+                }
+            }
         }
     }
 
@@ -205,17 +235,20 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
         willSet {
             switch newValue {
             case .Ready(let manager):
-                rileyLinkManagerObserver = NSNotificationCenter.defaultCenter().addObserverForName(nil, object: manager, queue: nil) { [weak self = self] (note) -> Void in
+                rileyLinkManagerObserver = NSNotificationCenter.defaultCenter().addObserverForName(nil, object: manager, queue: nil) { [weak self] (note) -> Void in
                     self?.receivedRileyLinkManagerNotification(note)
                 }
 
-                rileyLinkDeviceObserver = NSNotificationCenter.defaultCenter().addObserverForName(RileyLinkDeviceDidReceivePacketNotification, object: nil, queue: nil, usingBlock: { [weak self = self] (note) -> Void in
+                rileyLinkDevicePacketObserver = NSNotificationCenter.defaultCenter().addObserverForName(RileyLinkDeviceDidReceivePacketNotification, object: nil, queue: nil, usingBlock: { [weak self] (note) -> Void in
                     self?.receivedRileyLinkPacketNotification(note)
                 })
 
+                rileyLinkDeviceTimeObserver = NSNotificationCenter.defaultCenter().addObserverForName(RileyLinkDeviceDidChangeTimeNotification, object: nil, queue: nil, usingBlock: { [weak self] (note) -> Void in
+                    self?.pumpTimeZone = NSTimeZone.defaultTimeZone()
+                })
             case .NeedsConfiguration:
                 rileyLinkManagerObserver = nil
-                rileyLinkDeviceObserver = nil
+                rileyLinkDevicePacketObserver = nil
             }
         }
     }
@@ -328,23 +361,6 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
 
     let carbStore: CarbStore?
 
-    private func addCarbEntryFromWatchMessage(message: [String: AnyObject]) {
-        if let carbStore = carbStore, carbEntry = CarbEntryUserInfo(rawValue: message) {
-            let newEntry = NewCarbEntry(
-                quantity: HKQuantity(unit: carbStore.preferredUnit, doubleValue: carbEntry.value),
-                startDate: carbEntry.startDate,
-                foodType: nil,
-                absorptionTime: carbEntry.absorptionTimeType.absorptionTimeFromDefaults(carbStore.defaultAbsorptionTimes)
-            )
-
-            carbStore.addCarbEntry(newEntry, resultHandler: { (_, _, error) -> Void in
-                if let error = error {
-                    self.logger?.addError(error, fromSource: "CarbStore")
-                }
-            })
-        }
-    }
-
     // MARK: CarbStoreDelegate
 
     func carbStore(_: CarbStore, didError error: CarbStore.Error) {
@@ -370,14 +386,13 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
     }()
 
     private func updateWatch() {
-        // TODO: Check session.activationState as of iOS 9.3
-        if let _ = watchSession {
-//            switch session.activationState {
-//            case .NotActivated, .Inactive:
-//                session.activateSession()
-//            case .Activated:
+        if let session = watchSession {
+            switch session.activationState {
+            case .NotActivated, .Inactive:
+                session.activateSession()
+            case .Activated:
                 sendWatchContext()
-//            }
+            }
         }
     }
 
@@ -408,18 +423,68 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
         }
     }
 
+    private func addCarbEntryFromWatchMessage(message: [String: AnyObject], completionHandler: ((units: Double?, error: ErrorType?) -> Void)? = nil) {
+        if let carbStore = carbStore, carbEntry = CarbEntryUserInfo(rawValue: message) {
+            let newEntry = NewCarbEntry(
+                quantity: HKQuantity(unit: carbStore.preferredUnit, doubleValue: carbEntry.value),
+                startDate: carbEntry.startDate,
+                foodType: nil,
+                absorptionTime: carbEntry.absorptionTimeType.absorptionTimeFromDefaults(carbStore.defaultAbsorptionTimes)
+            )
+
+            loopManager.addCarbEntryAndRecommendBolus(newEntry) { (units, error) in
+                if let error = error {
+                    self.logger?.addError(error, fromSource: error is CarbStore.Error ? "CarbStore" : "Bolus")
+                }
+
+                completionHandler?(units: units, error: error)
+            }
+        } else {
+            completionHandler?(units: nil, error: Error.ValueError("Unable to parse CarbEntryUserInfo: \(message)"))
+        }
+    }
+
     // MARK: WCSessionDelegate
 
-    func session(session: WCSession, didReceiveMessage message: [String : AnyObject]) {
-        addCarbEntryFromWatchMessage(message)
+    func session(session: WCSession, didReceiveMessage message: [String : AnyObject], replyHandler: ([String: AnyObject]) -> Void) {
+        switch message["name"] as? String {
+        case CarbEntryUserInfo.name?:
+            addCarbEntryFromWatchMessage(message) { (units, error) in
+                replyHandler(BolusSuggestionUserInfo(recommendedBolus: units ?? 0).rawValue)
+            }
+        case SetBolusUserInfo.name?:
+            if let bolus = SetBolusUserInfo(rawValue: message), device = rileyLinkManager?.firstConnectedDevice {
+                device.sendBolusDose(bolus.value) { (success, error) -> Void in
+                    if let error = error {
+                        self.logger?.addError(error, fromSource: "Bolus")
+
+                        // TODO: Send push notification
+                    }
+
+                    replyHandler([:])
+                }
+            } else {
+                replyHandler([:])
+            }
+        default:
+            break
+        }
     }
 
     func session(session: WCSession, didReceiveUserInfo userInfo: [String : AnyObject]) {
         addCarbEntryFromWatchMessage(userInfo)
     }
 
-    // TODO: iOS 9.3
-    //    func session(session: WCSession, activationDidCompleteWithState activationState: WCSessionActivationState, error: NSError?) { }
+    func session(session: WCSession, activationDidCompleteWithState activationState: WCSessionActivationState, error: NSError?) {
+        switch activationState {
+        case .Activated:
+            if let error = error {
+                logger?.addError(error, fromSource: "WCSession")
+            }
+        case .Inactive, .NotActivated:
+            break
+        }
+    }
 
     func sessionDidBecomeInactive(session: WCSession) {
         // Nothing to do here
@@ -469,7 +534,7 @@ class DeviceDataManager: NSObject, CarbStoreDelegate, TransmitterDelegate, WCSes
 
     deinit {
         rileyLinkManagerObserver = nil
-        rileyLinkDeviceObserver = nil
+        rileyLinkDevicePacketObserver = nil
     }
 }
 

@@ -16,6 +16,10 @@ extern NSString * const RileyLinkDeviceDidReceivePacketNotification;
 
 extern NSString * const RileyLinkDevicePacketKey;
 
+extern NSString * const RileyLinkDeviceDidChangeTimeNotification;
+
+extern NSString * const RileyLinkDeviceTimeKey;
+
 @interface RileyLinkDevice : NSObject
 
 @property (copy, nonatomic, nullable, readonly) NSString *name;
@@ -30,6 +34,8 @@ extern NSString * const RileyLinkDevicePacketKey;
 
 @property (nonatomic, nullable, readonly) NSNumber *radioFrequency;
 
+@property (nonatomic, nullable, readonly) NSDate *lastIdle;
+
 #pragma mark - Pump commands
 
 - (void)tunePumpWithCompletionHandler:(void (^ _Nullable)(NSDictionary<NSString *, id> * _Nonnull))completionHandler;
@@ -39,6 +45,8 @@ extern NSString * const RileyLinkDevicePacketKey;
 - (void)runCommandWithShortMessage:(NSData *)firstMessage firstResponse:(uint8_t)firstResponse completionHandler:(void (^ _Nullable)(NSData * _Nullable response, NSString * _Nullable errorString))completionHandler;
 
 - (void)sendTempBasalMessage:(NSData *)firstMessage secondMessage:(NSData *)secondMessage thirdMessage:(NSData *)thirdMessage withCompletionHandler:(void (^)(NSData * _Nullable response, NSString * _Nullable errorString))completionHandler;
+
+- (void)sendChangeTimeMessage:(NSData *)firstMessage secondMessageGenerator:(NSData *(^)())secondMessageGenerator completionHandler:(void (^)(NSData * _Nullable response, NSString * _Nullable errorString))completionHandler;
 
 @end
 

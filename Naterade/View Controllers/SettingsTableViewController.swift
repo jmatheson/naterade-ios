@@ -158,7 +158,7 @@ class SettingsTableViewController: UITableViewController, DailyValueScheduleTabl
                 switchCell.`switch`?.on = dataManager.loopManager.dosingEnabled
                 switchCell.titleLabel.text = NSLocalizedString("Closed Loop", comment: "The title text for the looping enabled switch cell")
 
-                switchCell.`switch`?.addTarget(self, action: "dosingEnabledChanged:", forControlEvents: .ValueChanged)
+                switchCell.`switch`?.addTarget(self, action: #selector(dosingEnabledChanged(_:)), forControlEvents: .ValueChanged)
 
                 return switchCell
             }
@@ -251,7 +251,7 @@ class SettingsTableViewController: UITableViewController, DailyValueScheduleTabl
                 peripheralState: device?.peripheral.state
             )
 
-            deviceCell.connectSwitch.addTarget(self, action: "deviceConnectionChanged:", forControlEvents: .ValueChanged)
+            deviceCell.connectSwitch.addTarget(self, action: #selector(deviceConnectionChanged(_:)), forControlEvents: .ValueChanged)
 
             cell = deviceCell
         }
@@ -429,6 +429,7 @@ class SettingsTableViewController: UITableViewController, DailyValueScheduleTabl
                 vc.delegate = self
             case let vc as RileyLinkDeviceTableViewController:
                 vc.device = dataManager.rileyLinkManager?.devices[indexPath.row]
+                vc.pumpTimeZone = dataManager.pumpTimeZone
             default:
                 break
             }
@@ -444,7 +445,7 @@ class SettingsTableViewController: UITableViewController, DailyValueScheduleTabl
     func deviceConnectionChanged(connectSwitch: UISwitch) {
         let switchOrigin = connectSwitch.convertPoint(.zero, toView: tableView)
 
-        if let indexPath = tableView.indexPathForRowAtPoint(switchOrigin) where indexPath.section == 2,
+        if let indexPath = tableView.indexPathForRowAtPoint(switchOrigin) where indexPath.section == Section.Devices.rawValue,
             let deviceManager = dataManager.rileyLinkManager
         {
             let device = deviceManager.devices[indexPath.row]
@@ -507,9 +508,9 @@ class SettingsTableViewController: UITableViewController, DailyValueScheduleTabl
                     if let controller = controller as? GlucoseRangeScheduleTableViewController {
                         dataManager.glucoseTargetRangeSchedule = GlucoseRangeSchedule(unit: controller.unit, dailyItems: controller.scheduleItems, timeZone: controller.timeZone)
                     }
-                case let section:
+                case let row:
                     if let controller = controller as? DailyQuantityScheduleTableViewController {
-                        switch section {
+                        switch row {
                         case .CarbRatio:
                             dataManager.carbRatioSchedule = CarbRatioSchedule(unit: controller.unit, dailyItems: controller.scheduleItems, timeZone: controller.timeZone)
                         case .InsulinSensitivity:

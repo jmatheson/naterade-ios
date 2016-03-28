@@ -41,11 +41,6 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
         chartPanGestureRecognizer.delegate = self
         tableView.addGestureRecognizer(chartPanGestureRecognizer)
         charts.panGestureRecognizer = chartPanGestureRecognizer
-
-        dataManager.loopManager.update { (error) -> Void in
-            self.needsRefresh = true
-            self.reloadData()
-        }
     }
 
     deinit {
@@ -93,9 +88,7 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
         }
     }
 
-    private var needsRefresh = false
-
-    private var needsBolus = false
+    private var needsRefresh = true
 
     private var visible = false {
         didSet {
@@ -110,12 +103,9 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
             needsRefresh = false
             reloading = true
 
-            tableView.beginUpdates()
             tableView.reloadSections(NSIndexSet(indexesInRange: NSMakeRange(Section.Pump.rawValue, Section.count - Section.Pump.rawValue)
             ), withRowAnimation: visible ? .Automatic : .None)
-            tableView.endUpdates()
 
-            var recommendedBolus: Double?
             charts.startDate = NSDate(timeIntervalSinceNow: -NSTimeInterval(hours: 6))
             let reloadGroup = dispatch_group_create()
 
@@ -188,37 +178,16 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
                 }
             }
 
-            if needsBolus {
-                needsBolus = false
-
-                dispatch_group_enter(reloadGroup)
-                self.dataManager.loopManager.getRecommendedBolus { (units, error) -> Void in
-                    if let error = error {
-                        self.dataManager.logger?.addError(error, fromSource: "LoopDataManager")
-                    } else {
-                        recommendedBolus = units
-                    }
-
-                    dispatch_group_leave(reloadGroup)
-                }
-            }
-
             charts.glucoseTargetRangeSchedule = dataManager.glucoseTargetRangeSchedule
 
             dispatch_group_notify(reloadGroup, dispatch_get_main_queue()) {
                 self.charts.prerender()
 
-                self.tableView.beginUpdates()
                 self.tableView.reloadSections(NSIndexSet(indexesInRange: NSMakeRange(Section.Charts.rawValue, 2)),
                     withRowAnimation: .None
                 )
-                self.tableView.endUpdates()
 
                 self.reloading = false
-
-                if self.active && self.visible, let bolus = recommendedBolus where bolus > 0 {
-                    self.performSegueWithIdentifier(BolusViewController.className, sender: bolus)
-                }
             }
         }
     }
@@ -575,7 +544,9 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
         case .Charts:
             switch ChartRow(rawValue: indexPath.row)! {
             case .Glucose:
-                break
+                if let URL = NSURL(string: "dexcomcgm://") {
+                    UIApplication.sharedApplication().openURL(URL)
+                }
             case .IOB, .Dose:
                 performSegueWithIdentifier(ReservoirTableViewController.className, sender: indexPath)
             case .COB:
@@ -605,7 +576,11 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
             case .LastBasal:
                 break
             }
-        case .Pump, .Sensor:
+        case .Sensor:
+            if let URL = NSURL(string: "dexcomcgm://") {
+                UIApplication.sharedApplication().openURL(URL)
+            }
+        case .Pump:
             break
         }
     }
@@ -618,12 +593,28 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
 
     // MARK: - Actions
 
+    override func shouldPerformSegueWithIdentifier(identifier: String, sender: AnyObject?) -> Bool {
+        if identifier == CarbEntryEditViewController.className, let carbStore = dataManager.carbStore {
+            if carbStore.authorizationRequired {
+                carbStore.authorize { (success, error) in
+                    if success {
+                        self.performSegueWithIdentifier(CarbEntryEditViewController.className, sender: sender)
+                    }
+                }
+                return false
+            }
+        }
+
+        return true
+    }
+
     override func prepareForSegue(segue: UIStoryboardSegue, sender: AnyObject?) {
         super.prepareForSegue(segue, sender: sender)
 
         switch segue.destinationViewController {
         case let vc as CarbEntryTableViewController:
             vc.carbStore = dataManager.carbStore
+            self.needsRefresh = true
         case let vc as CarbEntryEditViewController:
             if let carbStore = dataManager.carbStore {
                 vc.defaultAbsorptionTimes = carbStore.defaultAbsorptionTimes
@@ -634,6 +625,14 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
         case let vc as BolusViewController:
             if let bolus = sender as? Double {
                 vc.recommendedBolus = bolus
+            } else {
+                self.dataManager.loopManager.getRecommendedBolus { (units, error) -> Void in
+                    if let error = error {
+                        self.dataManager.logger?.addError(error, fromSource: "Bolus")
+                    } else if let bolus = units {
+                        vc.recommendedBolus = bolus
+                    }
+                }
             }
         default:
             break
@@ -641,14 +640,22 @@ class StatusTableViewController: UITableViewController, UIGestureRecognizerDeleg
     }
 
     @IBAction func unwindFromEditing(segue: UIStoryboardSegue) {
-        if let carbVC = segue.sourceViewController as? CarbEntryEditViewController, carbStore = dataManager.carbStore, updatedEntry = carbVC.updatedCarbEntry {
+        if let carbVC = segue.sourceViewController as? CarbEntryEditViewController, updatedEntry = carbVC.updatedCarbEntry {
 
-            carbStore.addCarbEntry(updatedEntry) { (_, _, error) -> Void in
-                self.needsBolus = true
-
-                if let error = error {
-                    dispatch_async(dispatch_get_main_queue()) {
-                        self.presentAlertControllerWithError(error)
+            dataManager.loopManager.addCarbEntryAndRecommendBolus(updatedEntry) { (units, error) -> Void in
+                dispatch_async(dispatch_get_main_queue()) {
+                    if let error = error {
+                        // Ignore bolus wizard errors
+                        if error is CarbStore.Error {
+                            self.presentAlertControllerWithError(error)
+                        } else {
+                            self.dataManager.logger?.addError(error, fromSource: "Bolus")
+                            self.needsRefresh = true
+                            self.reloadData()
+                        }
+                    } else if self.active && self.visible, let bolus = units where bolus > 0 {
+                        self.performSegueWithIdentifier(BolusViewController.className, sender: bolus)
+                        self.needsRefresh = true
                     }
                 }
             }
